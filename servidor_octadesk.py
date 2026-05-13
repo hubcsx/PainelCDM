@@ -11,8 +11,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cdm_config.json')
-DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cdm_edits.db')
+_BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+# RAILWAY_VOLUME_MOUNT_PATH é setado automaticamente quando um Volume é anexado
+_DATA_DIR   = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', _BASE_DIR)
+CONFIG_FILE = os.path.join(_BASE_DIR,  'cdm_config.json')
+DB_FILE     = os.path.join(_DATA_DIR,  'cdm_edits.db')
 PORT = int(os.environ.get('PORT', 5050))
 # Em ambiente cloud, o config vive em memória (env vars) e não em arquivo
 _MEM_CONFIG = {}
