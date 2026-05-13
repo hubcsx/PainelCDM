@@ -1,0 +1,6 @@
+cdm_config.json
+ngrok.log
+servidor.log
+__pycache__/
+*.pyc
+.DS_Store
