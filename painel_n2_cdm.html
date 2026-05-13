@@ -83,6 +83,23 @@ td{padding:9px 10px;vertical-align:middle;border-bottom:1px solid var(--border);
 .empty{text-align:center;padding:60px;color:var(--light);font-size:.85rem;}
 .toast{position:fixed;bottom:22px;right:22px;background:var(--text);color:#fff;padding:9px 18px;border-radius:7px;font-size:.75rem;font-weight:500;box-shadow:var(--sh-md);z-index:9999;transform:translateY(60px);opacity:0;transition:all .25s;pointer-events:none;}
 .toast.show{transform:translateY(0);opacity:1;}
+/* ── Login overlay ────────────────────────────────────────────────── */
+.login-overlay{position:fixed;inset:0;background:rgba(15,15,20,.72);z-index:8000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px);}
+.login-card{background:var(--white);border-radius:14px;padding:40px 36px 32px;width:380px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.25);display:flex;flex-direction:column;align-items:center;gap:0;}
+.login-logo{margin-bottom:18px;}
+.login-title{font-size:1.15rem;font-weight:700;color:var(--text);margin-bottom:4px;text-align:center;}
+.login-sub{font-size:.75rem;color:var(--muted);margin-bottom:24px;text-align:center;}
+.login-field{width:100%;display:flex;flex-direction:column;gap:5px;margin-bottom:14px;}
+.login-field label{font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);}
+.login-field input{padding:10px 13px;border:1.5px solid var(--border);border-radius:7px;font-family:inherit;font-size:.85rem;outline:none;transition:border .15s;background:var(--white);width:100%;}
+.login-field input:focus{border-color:var(--red);}
+.login-err{font-size:.72rem;color:var(--crit);background:var(--crit-bg);border:1px solid #fca5a5;border-radius:6px;padding:8px 12px;width:100%;text-align:center;display:none;margin-bottom:6px;}
+.login-err.show{display:block;}
+.btn-login{width:100%;padding:11px;background:var(--red);color:#fff;border:none;border-radius:8px;font-family:inherit;font-size:.88rem;font-weight:700;cursor:pointer;transition:opacity .15s;margin-top:6px;}
+.btn-login:hover{opacity:.88;}.btn-login:disabled{opacity:.5;cursor:not-allowed;}
+.btn-logout{background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 11px;border-radius:6px;font-family:inherit;font-size:.7rem;cursor:pointer;display:flex;align-items:center;gap:4px;transition:all .15s;}
+.btn-logout:hover{border-color:var(--crit);color:var(--crit);}
+.login-user-badge{font-size:.7rem;color:var(--muted);background:var(--s2);border:1px solid var(--border);padding:3px 10px;border-radius:99px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .cfg-wrap{background:var(--white);border-bottom:3px solid var(--gold);position:fixed;top:56px;left:0;right:0;z-index:400;box-shadow:var(--sh-md);display:none;}
 .cfg-wrap.open{display:block;}
 .btn-cfg{background:var(--white);border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:6px;font-size:.9rem;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:var(--sh);transition:all .15s;}
@@ -127,11 +144,13 @@ td{padding:9px 10px;vertical-align:middle;border-bottom:1px solid var(--border);
     <div class="hdr-date" id="cur-date"></div>
     <span id="api-status" class="api-badge api-loading">Aguardando servidor...</span>
     <span class="cfg-status" id="cfg-status-badge">●&nbsp;Conectado</span>
+    <span class="login-user-badge" id="logged-user" title="Usuário logado" style="display:none"></span>
     <button class="btn-cfg" id="btn-cfg" onclick="toggleSettings()" title="Configurações">⚙</button>
     <button class="btn" id="btn-refresh" onclick="loadFromAPI()" disabled>⟳ Atualizar</button>
     <button class="btn on" id="btn-dash" onclick="switchView('dash')">Dashboard</button>
     <button class="btn" id="btn-tick" onclick="switchView('tickets')">Tickets</button>
     <button class="btn btn-gold" onclick="exportCSV()">Exportar CSV</button>
+    <button class="btn-logout" onclick="doLogout()" title="Sair">⎋ Sair</button>
   </div>
 </header>
 
@@ -162,6 +181,29 @@ td{padding:9px 10px;vertical-align:middle;border-bottom:1px solid var(--border);
   <div class="prog-bar"><div class="prog-track"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div><div class="prog-lbl">Validação líderes: <b id="prog-pct">0%</b>&nbsp;<span id="prog-cnt" style="color:var(--light)">0/0</span></div><div style="margin-left:auto"><span id="prog-sla" style="font-size:.68rem;color:var(--crit);font-weight:600"></span></div></div>
   <div class="filters"><span class="flbl">Criticidade</span><select class="fsel" id="f-crit" onchange="applyFilters()"><option value="all">Todas</option><option value="Crítica">Crítica</option><option value="Alta">Alta</option><option value="Média">Média</option><option value="Baixa">Baixa</option><option value="">Não definida</option></select><span class="flbl">Status</span><select class="fsel" id="f-status" onchange="applyFilters()"><option value="all">Todos</option><option value="Em Aberto">Em Aberto</option><option value="Em Andamento">Em Andamento</option><option value="Bloqueado">Bloqueado</option><option value="Resolvido">Resolvido</option><option value="_sla">SLA Vencido</option><option value="_pend">Sem Validação</option></select><span class="flbl">Responsável</span><select class="fsel" id="f-resp" onchange="applyFilters()"><option value="all">Todos</option></select><input type="text" class="fsearch" id="f-search" placeholder="Buscar #, título, cliente..." oninput="applyFilters()"><div class="filters-end"><button class="btn btn-gold" onclick="exportCSV()">Exportar CSV</button></div></div>
   <div class="tbl-wrap"><table><colgroup><col style="width:4px"><col class="col-ticket"><col class="col-dept"><col class="col-titulo"><col class="col-resp"><col class="col-cliente"><col class="col-horas"><col class="col-crit"><col class="col-prazo"><col class="col-motivo"><col class="col-status"></colgroup><thead><tr><th style="width:4px;padding:0"></th><th class="sort" onclick="sortBy('num')">Ticket</th><th>Dept</th><th>Título</th><th>Responsável</th><th>Cliente / Grupo</th><th class="sort" onclick="sortBy('h')">Horas</th><th class="sort" onclick="sortBy('c')">Criticidade</th><th>Prazo</th><th>Motivo em Aberto</th><th>Status</th></tr></thead><tbody id="tbody"></tbody></table><div class="empty" id="empty" style="display:none">Nenhum ticket encontrado.</div></div>
+</div>
+<!-- ── OVERLAY DE LOGIN ─────────────────────────────────────────────────── -->
+<div class="login-overlay" id="login-overlay" style="display:none;">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="48" height="48" rx="12" fill="#8b1a1a"/>
+        <path d="M24 10C16.27 10 10 16.27 10 24s6.27 14 14 14 14-6.27 14-14S31.73 10 24 10zm0 4a10 10 0 110 20 10 10 0 010-20zm-3 5v10l8-5-8-5z" fill="white"/>
+      </svg>
+    </div>
+    <div class="login-title">Central N2 — CDM</div>
+    <div class="login-sub">Acesso restrito. Insira suas credenciais para continuar.</div>
+    <div class="login-field">
+      <label>E-mail</label>
+      <input type="email" id="login-email" placeholder="seu@email.com" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('login-pw').focus()"/>
+    </div>
+    <div class="login-field">
+      <label>Senha</label>
+      <input type="password" id="login-pw" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"/>
+    </div>
+    <div class="login-err" id="login-err"></div>
+    <button class="btn-login" id="btn-login" onclick="doLogin()">Entrar</button>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 <div class="offline-overlay" id="offline-overlay">
@@ -205,15 +247,21 @@ var TIER_MAP_INITIAL = {"Guiomar Claro":"Prata","BORDONAL":"Prata","QUICK LINK":
 var PROXY = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:5050'
   : window.location.origin;
-// ngrok exige este header em requisições fetch fora do browser principal
-if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-  var _origFetch = window.fetch;
+var CDM_TOKEN = localStorage.getItem('cdm_session') || '';
+var CDM_USER  = localStorage.getItem('cdm_user')    || '';
+// Intercepta todos os fetch: adiciona token de sessão + header ngrok
+(function(){
+  var _orig = window.fetch;
   window.fetch = function(url, opts) {
     opts = opts || {};
-    opts.headers = Object.assign({'ngrok-skip-browser-warning': 'true'}, opts.headers || {});
-    return _origFetch(url, opts);
+    opts.headers = Object.assign({}, opts.headers || {});
+    if (CDM_TOKEN) opts.headers['X-CDM-Token'] = CDM_TOKEN;
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      opts.headers['ngrok-skip-browser-warning'] = 'true';
+    }
+    return _orig(url, opts);
   };
-}
+})();
 var TICKETS = [];
 var TODAY = new Date().toISOString().split('T')[0];
 var NL = String.fromCharCode(10);
@@ -554,12 +602,77 @@ function exportCSV(){var hdr=['#','Dept','Titulo','Responsavel','Cliente','Grupo
 var toastTimer;
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.classList.remove('show');},1800);}
 
+// ── AUTENTICAÇÃO ─────────────────────────────────────────────────────────────
+function showLoginOverlay(){document.getElementById('login-overlay').style.display='flex';}
+function hideLoginOverlay(){document.getElementById('login-overlay').style.display='none';}
+
+function setLoggedUser(email,name){
+  CDM_USER=name||email;
+  var el=document.getElementById('logged-user');
+  if(el){el.textContent='👤 '+(name||email);el.style.display='';}
+}
+
+function checkSession(){
+  fetch(PROXY+'/session').then(function(r){return r.json();}).then(function(d){
+    if(d.ok){
+      hideLoginOverlay();
+      setLoggedUser(d.email, CDM_USER||d.email);
+      loadLocal();loadServerEdits();loadConfig();
+    } else {
+      showLoginOverlay();
+    }
+  }).catch(function(){
+    // Se não há servidor (local sem auth), continua normalmente
+    hideLoginOverlay();loadLocal();loadServerEdits();loadConfig();
+  });
+}
+
+function doLogin(){
+  var email=document.getElementById('login-email').value.trim();
+  var pw=document.getElementById('login-pw').value;
+  var btn=document.getElementById('btn-login');
+  var err=document.getElementById('login-err');
+  err.classList.remove('show');
+  if(!email||!pw){err.textContent='Preencha e-mail e senha.';err.classList.add('show');return;}
+  btn.disabled=true;btn.textContent='Entrando...';
+  fetch(PROXY+'/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({email:email,password:pw})
+  }).then(function(r){return r.json();}).then(function(d){
+    btn.disabled=false;btn.textContent='Entrar';
+    if(d.ok){
+      CDM_TOKEN=d.token;
+      localStorage.setItem('cdm_session',d.token);
+      localStorage.setItem('cdm_user',d.name||d.email);
+      hideLoginOverlay();
+      setLoggedUser(d.email,d.name);
+      loadLocal();loadServerEdits();loadConfig();
+      showToast('Bem-vindo, '+(d.name||d.email)+'!');
+    } else {
+      err.textContent=d.error||'Credenciais inválidas.';err.classList.add('show');
+      document.getElementById('login-pw').value='';
+    }
+  }).catch(function(){
+    btn.disabled=false;btn.textContent='Entrar';
+    err.textContent='Servidor indisponível. Tente novamente.';err.classList.add('show');
+  });
+}
+
+function doLogout(){
+  fetch(PROXY+'/logout',{method:'POST'}).catch(function(){});
+  CDM_TOKEN='';CDM_USER='';
+  localStorage.removeItem('cdm_session');
+  localStorage.removeItem('cdm_user');
+  var el=document.getElementById('logged-user');if(el)el.style.display='none';
+  TICKETS=[];
+  showLoginOverlay();
+  showToast('Sessão encerrada.');
+}
+
 function init(){
   var d=new Date(),days=['dom','seg','ter','qua','qui','sex','s\u00e1b'],months=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
   setText('cur-date',days[d.getDay()]+', '+d.getDate()+' de '+months[d.getMonth()]+' de '+d.getFullYear());
-  loadLocal();
-  loadServerEdits();
-  loadConfig();
+  if(CDM_USER){setLoggedUser('',CDM_USER);}
+  checkSession();
 }
 init();
 </script>

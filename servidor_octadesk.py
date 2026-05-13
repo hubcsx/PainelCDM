@@ -6,7 +6,7 @@ Acesse: http://localhost:5050/painel_n2_cdm.html
 Renova o token JWT automaticamente a cada ~35h usando suas credenciais.
 """
 
-import json, os, threading, time, base64, sqlite3
+import json, os, threading, time, base64, sqlite3, hashlib, secrets
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -20,6 +20,8 @@ PORT = int(os.environ.get('PORT', 5050))
 # Em ambiente cloud, o config vive em memória (env vars) e não em arquivo
 _MEM_CONFIG = {}
 _DB_LOCK = threading.Lock()
+# Salt para hash de senhas — pode customizar via env var
+_SALT = os.environ.get('CDM_SALT', 'cdm_painel_n2_2024_secure')
 
 GQL_URL  = 'https://southamerica-east1-001.prod.octadesk.services/tickets/api/graphql/query'
 AUTH_URL = 'https://southamerica-east1-001.pantheon.octadesk.services/nucleus-auth/auth'
@@ -58,10 +60,11 @@ query ($externalQueries: [QueryFilterInputType]!, $propertySort: String!,
 }
 """
 
-# ── DATABASE (edits compartilhados) ──────────────────────────────────────────
+# ── DATABASE (edits + usuários + sessões) ────────────────────────────────────
 def init_db():
     with _DB_LOCK:
         con = sqlite3.connect(DB_FILE)
+        # Tabela de edits de tickets
         con.execute('''CREATE TABLE IF NOT EXISTS edits (
             numero       TEXT PRIMARY KEY,
             criticidade  TEXT DEFAULT '',
@@ -70,9 +73,147 @@ def init_db():
             status       TEXT DEFAULT 'Em Aberto',
             updated_at   REAL
         )''')
+        # Tabela de usuários do painel
+        con.execute('''CREATE TABLE IF NOT EXISTS users (
+            email        TEXT PRIMARY KEY,
+            name         TEXT DEFAULT '',
+            password_hash TEXT NOT NULL,
+            created_at   REAL
+        )''')
+        # Tabela de sessões ativas
+        con.execute('''CREATE TABLE IF NOT EXISTS sessions (
+            token        TEXT PRIMARY KEY,
+            email        TEXT NOT NULL,
+            expires_at   REAL NOT NULL,
+            created_at   REAL
+        )''')
         con.commit()
+        # Cria usuário admin a partir das variáveis de ambiente
+        admin_email = os.environ.get('CDM_ADMIN_EMAIL', '').strip().lower()
+        admin_pw    = os.environ.get('CDM_ADMIN_PASSWORD', '').strip()
+        admin_name  = os.environ.get('CDM_ADMIN_NAME', 'Administrador').strip()
+        if admin_email and admin_pw:
+            exists = con.execute('SELECT 1 FROM users WHERE email=?', (admin_email,)).fetchone()
+            if not exists:
+                con.execute('INSERT INTO users (email, name, password_hash, created_at) VALUES (?,?,?,?)',
+                            (admin_email, admin_name, _hash_pw(admin_pw), time.time()))
+                con.commit()
+                print(f'[AUTH] Admin criado: {admin_email}')
+            else:
+                # Atualiza a senha do admin se a env var mudar
+                con.execute('UPDATE users SET password_hash=?, name=? WHERE email=?',
+                            (_hash_pw(admin_pw), admin_name, admin_email))
+                con.commit()
+        else:
+            print('[AUTH] ⚠️  Defina CDM_ADMIN_EMAIL e CDM_ADMIN_PASSWORD nas variáveis de ambiente!')
         con.close()
-    print(f'[DB] Banco de edits pronto: {DB_FILE}')
+    print(f'[DB] Banco pronto: {DB_FILE}')
+
+# ── AUTH ──────────────────────────────────────────────────────────────────────
+def _hash_pw(password):
+    return hashlib.sha256((_SALT + password).encode('utf-8')).hexdigest()
+
+def db_validate_login(email, password):
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            row = con.execute('SELECT name, password_hash FROM users WHERE email=?',
+                              (email.lower().strip(),)).fetchone()
+            con.close()
+            if not row:
+                return None, 'E-mail não encontrado'
+            if row[1] != _hash_pw(password):
+                return None, 'Senha incorreta'
+            return {'email': email.lower().strip(), 'name': row[0]}, None
+        except Exception as e:
+            return None, str(e)
+
+def db_create_session(email, hours=24):
+    token = secrets.token_urlsafe(40)
+    expires = time.time() + hours * 3600
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            # Remove sessões antigas do mesmo usuário (mantém máx 5)
+            old = con.execute('SELECT token FROM sessions WHERE email=? ORDER BY created_at DESC LIMIT -1 OFFSET 4',
+                              (email,)).fetchall()
+            for (t,) in old:
+                con.execute('DELETE FROM sessions WHERE token=?', (t,))
+            con.execute('INSERT INTO sessions (token, email, expires_at, created_at) VALUES (?,?,?,?)',
+                        (token, email, expires, time.time()))
+            con.commit()
+            con.close()
+            return token
+        except Exception as e:
+            print(f'[AUTH] Erro ao criar sessão: {e}')
+            return None
+
+def db_validate_session(token):
+    if not token:
+        return None
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            row = con.execute('SELECT email, expires_at FROM sessions WHERE token=?', (token,)).fetchone()
+            con.close()
+            if not row:
+                return None
+            if row[1] < time.time():
+                return None  # expirada
+            return row[0]
+        except:
+            return None
+
+def db_delete_session(token):
+    if not token:
+        return
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            con.execute('DELETE FROM sessions WHERE token=?', (token,))
+            con.commit()
+            con.close()
+        except:
+            pass
+
+def db_list_users():
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            rows = con.execute('SELECT email, name, created_at FROM users ORDER BY created_at').fetchall()
+            con.close()
+            return [{'email': r[0], 'name': r[1], 'created_at': r[2]} for r in rows]
+        except:
+            return []
+
+def db_add_user(email, password, name=''):
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            exists = con.execute('SELECT 1 FROM users WHERE email=?', (email,)).fetchone()
+            if exists:
+                con.execute('UPDATE users SET password_hash=?, name=? WHERE email=?',
+                            (_hash_pw(password), name, email))
+            else:
+                con.execute('INSERT INTO users (email, name, password_hash, created_at) VALUES (?,?,?,?)',
+                            (email, name, _hash_pw(password), time.time()))
+            con.commit()
+            con.close()
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+def db_delete_user(email):
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            con.execute('DELETE FROM users WHERE email=?', (email,))
+            con.execute('DELETE FROM sessions WHERE email=?', (email,))
+            con.commit()
+            con.close()
+            return True
+        except:
+            return False
 
 def db_get_all():
     with _DB_LOCK:
@@ -363,15 +504,46 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def get_token(self):
+        return self.headers.get('X-CDM-Token', '')
+
+    def check_auth(self):
+        """Valida sessão. Retorna email do usuário ou None (já envia 401)."""
+        email = db_validate_session(self.get_token())
+        if not email:
+            self.send_json({'error': 'Sessão inválida. Faça login novamente.', 'code': 401}, 401)
+        return email
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin',  '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-CDM-Token')
         self.end_headers()
 
     def do_GET(self):
         path = self.path.split('?')[0]
+
+        # ── Rotas públicas (sem autenticação) ──────────────────────────────
+        if path == '/ping':
+            self.send_json({'ok': True})
+            return
+
+        if path == '/session':
+            email = db_validate_session(self.get_token())
+            self.send_json({'ok': bool(email), 'email': email or ''})
+            return
+
+        if path == '/users':
+            if not self.check_auth():
+                return
+            self.send_json({'users': db_list_users()})
+            return
+
+        # ── Rotas protegidas ───────────────────────────────────────────────
+        if path in ['/config', '/tickets', '/refresh', '/edits', '/sample']:
+            if not self.check_auth():
+                return
 
         if path == '/config':
             cfg   = load_config()
@@ -398,9 +570,6 @@ class Handler(SimpleHTTPRequestHandler):
             cfg = load_config()
             self.send_json({'ok': ok, 'msg': msg, 'hasJwt': bool(cfg.get('jwtToken'))})
 
-        elif path == '/ping':
-            self.send_json({'ok': True})
-
         elif path == '/edits':
             self.send_json(db_get_all())
 
@@ -417,14 +586,43 @@ class Handler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        try:
+            body = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+        except Exception:
+            body = {}
+
+        # ── Rota pública: login ────────────────────────────────────────────
+        if self.path == '/login':
+            email    = str(body.get('email', '')).strip().lower()
+            password = str(body.get('password', '')).strip()
+            if not email or not password:
+                self.send_json({'ok': False, 'error': 'Preencha e-mail e senha'}, 400)
+                return
+            user, err = db_validate_login(email, password)
+            if err:
+                print(f'[AUTH] Falha de login para {email}: {err}')
+                self.send_json({'ok': False, 'error': err}, 401)
+                return
+            token = db_create_session(email)
+            print(f'[AUTH] Login: {email}')
+            self.send_json({'ok': True, 'token': token, 'name': user['name'], 'email': email})
+            return
+
+        # ── Rota pública: logout ───────────────────────────────────────────
+        if self.path == '/logout':
+            db_delete_session(self.get_token())
+            self.send_json({'ok': True})
+            return
+
+        # ── Rotas protegidas ───────────────────────────────────────────────
+        if not self.check_auth():
+            return
+
         if self.path == '/config':
-            length   = int(self.headers.get('Content-Length', 0))
-            body     = json.loads(self.rfile.read(length).decode('utf-8'))
             existing = load_config()
-            # Preserva senha se vier mascarada
             if body.get('password', '').startswith('•'):
                 body['password'] = existing.get('password', '')
-            # Garante tenantId e subdomain padrão
             body.setdefault('tenantId', CDM_TENANT_ID)
             body.setdefault('subdomain', CDM_SUBDOMAIN)
             existing.update(body)
@@ -432,14 +630,30 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({'ok': True})
 
         elif self.path == '/edits':
-            length = int(self.headers.get('Content-Length', 0))
-            body   = json.loads(self.rfile.read(length).decode('utf-8'))
             numero = str(body.get('numero', '')).strip()
             if not numero:
                 self.send_json({'ok': False, 'error': 'numero obrigatório'}, 400)
                 return
             ok = db_save_edit(numero, body)
             self.send_json({'ok': ok})
+
+        elif self.path == '/users':
+            action = body.get('action', '')
+            if action == 'add':
+                email  = str(body.get('email', '')).strip().lower()
+                pw     = str(body.get('password', '')).strip()
+                name   = str(body.get('name', '')).strip()
+                if not email or not pw:
+                    self.send_json({'ok': False, 'error': 'E-mail e senha obrigatórios'}, 400)
+                    return
+                ok, err = db_add_user(email, pw, name)
+                self.send_json({'ok': ok, 'error': err})
+            elif action == 'delete':
+                email = str(body.get('email', '')).strip().lower()
+                ok = db_delete_user(email)
+                self.send_json({'ok': ok})
+            else:
+                self.send_json({'ok': False, 'error': 'Ação inválida'}, 400)
 
         else:
             self.send_response(404)
