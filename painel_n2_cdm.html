@@ -168,14 +168,11 @@ td{padding:9px 10px;vertical-align:middle;border-bottom:1px solid var(--border);
   <div class="offline-card">
     <div class="offline-icon">🔴</div>
     <div class="offline-title">Painel temporariamente offline</div>
-    <div class="offline-sub">O servidor local precisa estar ativo para carregar os tickets do Octadesk.</div>
+    <div class="offline-sub">Não foi possível conectar ao servidor. Aguarde alguns instantes e tente novamente.</div>
     <div class="offline-note">
-      <b>Você é líder?</b> O painel ficará disponível em instantes — aguarde ou avise a equipe CDM para iniciar o servidor.<br><br>
-      <b>Você é administrador?</b> Execute no Terminal:
-    </div>
-    <div class="offline-code">
-      1. python3 ~/Downloads/servidor_octadesk.py<br>
-      2. ngrok http --domain=vagabond-ellipse-frigidity.ngrok-free.dev 5050
+      <b>Você é líder ou cliente?</b> O servidor pode estar reiniciando — aguarde 30 segundos e clique em "Tentar novamente".<br><br>
+      <b>Você é administrador CDM?</b> Verifique o status do serviço em:<br>
+      <a href="https://railway.com" target="_blank" style="color:var(--gold);font-weight:600">railway.com</a> → projeto desirable-nurturing → PainelCDM
     </div>
     <button class="offline-btn" onclick="retryConnection()">⟳ Tentar novamente</button>
     <div class="offline-dots">
