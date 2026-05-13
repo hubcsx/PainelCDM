@@ -6,15 +6,17 @@ Acesse: http://localhost:5050/painel_n2_cdm.html
 Renova o token JWT automaticamente a cada ~35h usando suas credenciais.
 """
 
-import json, os, threading, time, base64
+import json, os, threading, time, base64, sqlite3
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cdm_config.json')
+DB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cdm_edits.db')
 PORT = int(os.environ.get('PORT', 5050))
 # Em ambiente cloud, o config vive em memória (env vars) e não em arquivo
 _MEM_CONFIG = {}
+_DB_LOCK = threading.Lock()
 
 GQL_URL  = 'https://southamerica-east1-001.prod.octadesk.services/tickets/api/graphql/query'
 AUTH_URL = 'https://southamerica-east1-001.pantheon.octadesk.services/nucleus-auth/auth'
@@ -52,6 +54,64 @@ query ($externalQueries: [QueryFilterInputType]!, $propertySort: String!,
   }
 }
 """
+
+# ── DATABASE (edits compartilhados) ──────────────────────────────────────────
+def init_db():
+    with _DB_LOCK:
+        con = sqlite3.connect(DB_FILE)
+        con.execute('''CREATE TABLE IF NOT EXISTS edits (
+            numero       TEXT PRIMARY KEY,
+            criticidade  TEXT DEFAULT '',
+            prazo        TEXT DEFAULT '',
+            motivo       TEXT DEFAULT '',
+            status       TEXT DEFAULT 'Em Aberto',
+            updated_at   REAL
+        )''')
+        con.commit()
+        con.close()
+    print(f'[DB] Banco de edits pronto: {DB_FILE}')
+
+def db_get_all():
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            con.row_factory = sqlite3.Row
+            rows = con.execute('SELECT * FROM edits').fetchall()
+            con.close()
+            return {r['numero']: {
+                'criticidade': r['criticidade'] or '',
+                'prazo':       r['prazo']       or '',
+                'motivo':      r['motivo']      or '',
+                'status':      r['status']      or 'Em Aberto',
+            } for r in rows}
+        except Exception as e:
+            print(f'[DB] Erro ao ler edits: {e}')
+            return {}
+
+def db_save_edit(numero, data):
+    with _DB_LOCK:
+        try:
+            con = sqlite3.connect(DB_FILE)
+            con.execute('''INSERT INTO edits (numero, criticidade, prazo, motivo, status, updated_at)
+                           VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(numero) DO UPDATE SET
+                             criticidade=excluded.criticidade,
+                             prazo=excluded.prazo,
+                             motivo=excluded.motivo,
+                             status=excluded.status,
+                             updated_at=excluded.updated_at''',
+                        (numero,
+                         data.get('criticidade',''),
+                         data.get('prazo',''),
+                         data.get('motivo',''),
+                         data.get('status','Em Aberto'),
+                         time.time()))
+            con.commit()
+            con.close()
+            return True
+        except Exception as e:
+            print(f'[DB] Erro ao salvar edit: {e}')
+            return False
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 def load_config():
@@ -338,6 +398,9 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == '/ping':
             self.send_json({'ok': True})
 
+        elif path == '/edits':
+            self.send_json(db_get_all())
+
         elif path == '/sample':
             cfg = load_config()
             tickets, err = fetch_tickets_graphql(cfg)
@@ -364,12 +427,26 @@ class Handler(SimpleHTTPRequestHandler):
             existing.update(body)
             save_config(existing)
             self.send_json({'ok': True})
+
+        elif self.path == '/edits':
+            length = int(self.headers.get('Content-Length', 0))
+            body   = json.loads(self.rfile.read(length).decode('utf-8'))
+            numero = str(body.get('numero', '')).strip()
+            if not numero:
+                self.send_json({'ok': False, 'error': 'numero obrigatório'}, 400)
+                return
+            ok = db_save_edit(numero, body)
+            self.send_json({'ok': ok})
+
         else:
             self.send_response(404)
             self.end_headers()
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    # Inicia banco de dados de edits
+    init_db()
+
     # Garante config base
     cfg = load_config()
     changed = False

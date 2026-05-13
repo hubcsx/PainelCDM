@@ -229,7 +229,35 @@ function loadLocal(){
 }
 function saveLocal(){localStorage.setItem('cdm_edit',JSON.stringify(editData));localStorage.setItem('cdm_tiers',JSON.stringify(tierMap));}
 function getE(n){return editData[n]||{criticidade:'',prazo:'',motivo:'',status:'Em Aberto'};}
-function setF(n,f,v){if(!editData[n])editData[n]={criticidade:'',prazo:'',motivo:'',status:'Em Aberto'};editData[n][f]=v;saveLocal();}
+function setF(n,f,v){if(!editData[n])editData[n]={criticidade:'',prazo:'',motivo:'',status:'Em Aberto'};editData[n][f]=v;saveLocal();syncEdit(n);}
+
+// ── SYNC COM SERVIDOR ────────────────────────────────────────────────────────
+var _syncDebounce={};
+function syncEdit(num){
+  clearTimeout(_syncDebounce[num]);
+  _syncDebounce[num]=setTimeout(function(){
+    var e=editData[num];if(!e)return;
+    fetch(PROXY+'/edits',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({numero:num,criticidade:e.criticidade||'',prazo:e.prazo||'',motivo:e.motivo||'',status:e.status||'Em Aberto'})
+    }).catch(function(){/* silencia falha — já está no localStorage */});
+  },600);
+}
+function loadServerEdits(){
+  fetch(PROXY+'/edits').then(function(r){return r.json();}).then(function(server){
+    var changed=false;
+    for(var num in server){
+      var sv=server[num],lc=editData[num];
+      // servidor vence se tiver mais dados ou for diferente
+      if(!lc||(sv.criticidade&&!lc.criticidade)||(sv.motivo&&!lc.motivo)||
+         (sv.status&&sv.status!=='Em Aberto'&&lc.status==='Em Aberto')||
+         (sv.prazo&&!lc.prazo)){
+        editData[num]=Object.assign({criticidade:'',prazo:'',motivo:'',status:'Em Aberto'},lc||{},sv);
+        changed=true;
+      }
+    }
+    if(changed){saveLocal();if(TICKETS.length)renderTable();}
+  }).catch(function(){/* offline — usa localStorage */});
+}
 function getTier(g){return(g&&tierMap[g])?tierMap[g]:'';}
 function isAutoTier(g){return !!(g&&TIER_MAP_INITIAL[g]);}
 function isVal(n){var e=getE(n);return e.criticidade&&e.motivo&&e.motivo.trim().length>3;}
@@ -329,6 +357,7 @@ function loadFromAPI(){
       TICKETS=raw.map(mapTicket).filter(function(t){return !!t.numero;});
       var ts=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
       showStatus('Atualizado \u00e0s '+ts+' \u00b7 '+TICKETS.length+' tickets','ok');
+      loadServerEdits();
       populateRespFilter();updateHeaderCounts();updateNivelCounts();renderDash();
       if(currentView==='tickets'){applyFilters();updateTicketKPIs();}
       clearInterval(refreshTimer);
@@ -529,6 +558,7 @@ function init(){
   var d=new Date(),days=['dom','seg','ter','qua','qui','sex','s\u00e1b'],months=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
   setText('cur-date',days[d.getDay()]+', '+d.getDate()+' de '+months[d.getMonth()]+' de '+d.getFullYear());
   loadLocal();
+  loadServerEdits();
   loadConfig();
 }
 init();
